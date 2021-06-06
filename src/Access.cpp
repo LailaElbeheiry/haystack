@@ -60,7 +60,7 @@ void Access::countCompulsoryMisses(isl::union_map First) {
   Timer::stopTimer("CountCompulsoryMisses");
 }
 
-void Access::computeStackDistances(isl::union_map BetweenMap) {
+void Access::computeStackDistances(isl::union_map BetweenMap, isl_printer* p) {
   Timer::startTimer("ComputeStackDistances");
   // extract access between map
   BetweenMap = BetweenMap.intersect_domain(Domain_);
@@ -121,6 +121,7 @@ void Access::computeStackDistances(isl::union_map BetweenMap) {
     Expression_.clear();
     auto Count = isl::manage(isl_union_map_card(isl::union_map(BetweenMap).release()));
     Count = Count.intersect_domain(BetweenMap.domain());
+
     auto countMapDomain = [&](isl::set Set) {
       Result_.Counted += isl::cardinality(Set);
       return isl::stat::ok();
@@ -174,7 +175,9 @@ std::vector<long> Access::countCapacityMisses(std::vector<long> CacheSizes) {
   std::vector<long> Limits;
   for (auto Size : CacheSizes) {
     Results.push_back(Misses_);
-    Limits.push_back(Size / MachineModel_.CacheLineSize);
+    //TODO: Change this to associativity
+    // Limits.push_back(Size / MachineModel_.CacheLineSize);
+    Limits.push_back(MachineModel_.Assoc);
   }
   // compute the cache misses for the constant domains
   for (auto &Domain : Constant_) {
@@ -193,6 +196,9 @@ std::vector<long> Access::countCapacityMisses(std::vector<long> CacheSizes) {
     std::transform(Results.begin(), Results.end(), Misses.begin(), Results.begin(), std::plus<long>());
   }
   Timer::stopTimer("CountCapacityMisses");
+  // for (auto res : Results){
+  //   printf("res: %ld\n", res);
+  // }
   return Results;
 }
 

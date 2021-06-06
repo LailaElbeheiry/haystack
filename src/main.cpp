@@ -26,6 +26,7 @@ const int CACHE_LINE_SIZE = 64;
 // default
 const int CACHE_SIZE1 = 32 * 1024;
 const int CACHE_SIZE2 = 512 * 1024;
+const int CACHE_ASSOC = 2;
 
 bool check_path(std::string path) {
   std::ifstream f(path.c_str());
@@ -88,15 +89,15 @@ std::ostream &operator<<(std::ostream &os, const std::vector<long> &vec) {
 
 void run_model(isl::ctx Context, po::variables_map Variables) {
   // allocate the machine model with default values
-  machine_model MachineModel = {Variables["line-size"].as<long>(), Variables["cache-sizes"].as<std::vector<long>>()};
+  machine_model MachineModel = {Variables["line-size"].as<long>(), Variables["cache-sizes"].as<std::vector<long>>(), Variables["associativity"].as<long>()};
   model_options ModelOptions = {Variables["compute-bounds"].as<bool>()};
   printf("-> setting up cache levels\n");
   std::sort(MachineModel.CacheSizes.begin(), MachineModel.CacheSizes.end());
   for (auto CacheSize : MachineModel.CacheSizes) {
     if (CacheSize % 1024 == 0) {
-      printf("   - %ldkB with %ldB cache lines\n", CacheSize / 1024, MachineModel.CacheLineSize);
+      printf("   - %ldkB with %ldB cache lines, %ld-way associative\n", CacheSize / 1024, MachineModel.CacheLineSize, MachineModel.Assoc);
     } else {
-      printf("   - %ldB with %ldB cache lines\n", CacheSize, MachineModel.CacheLineSize);
+      printf("   - %ldB with %ldB cache lines, %ld-way associative\n", CacheSize, MachineModel.CacheLineSize, MachineModel.Assoc);
     }
   }
   printf("-> done\n");
@@ -142,7 +143,8 @@ void run_model(isl::ctx Context, po::variables_map Variables) {
   auto CacheMisses = Model.countCacheMisses();
   auto Stop = std::chrono::high_resolution_clock::now();
   double TotalEvaluation = std::chrono::duration<double, std::milli>(Stop - Start).count();
-  printf("-> done after (%.2fms)\n", TotalEvaluation);
+  // printf("-> done after (%.2fms)\n", TotalEvaluation);
+  printf("-> TIME_TAKEN (%.2fms)\n", TotalEvaluation);
   // collect and print result
   long TotalAccesses = 0;
   long TotalCompulsory = 0;
@@ -252,10 +254,12 @@ void run_model(isl::ctx Context, po::variables_map Variables) {
   std::cout << "                     absolute number of cache misses (SCOP)" << std::endl;
   std::cout << DoubleLine << std::endl;
   std::cout.imbue(std::locale(""));
-  std::cout << std::setw(16) << std::left << "compulsory:";
+  // std::cout << std::setw(16) << std::left << "compulsory:";
+  std::cout << std::setw(16) << std::left << "COMPULSORY:";
   std::cout << std::setw(20) << std::right << TotalCompulsory << std::endl;
   for (int i = 1; i <= MachineModel.CacheSizes.size(); ++i) {
-    std::string Capacity = "capacity (L" + std::to_string(i) + "):";
+    // std::string Capacity = "capacity (L" + std::to_string(i) + "):";
+    std::string Capacity = "CAPACITY";
     std::cout << std::setw(16) << std::left << Capacity;
     std::cout << std::setw(20) << std::right << TotalCapacity[i - 1] << std::endl;
   }
@@ -269,15 +273,16 @@ int main(int argc, const char **args) {
     // define the program options
     po::options_description Descriptor("Program options");
     Descriptor.add_options()                    //
-        ("help,h", "print the program options") //
-        ("cache-sizes,c", po::value<std::vector<long>>()->multitoken()->default_value({CACHE_SIZE1, CACHE_SIZE2}),
+      ("help,h", "print the program options") //
+      ("cache-sizes,c", po::value<std::vector<long>>()->multitoken()->default_value({CACHE_SIZE1, CACHE_SIZE2}),
          "cache sizes in byte")                                                                                       //
-        ("line-size,l", po::value<long>()->default_value(CACHE_LINE_SIZE), "cache-line size in byte")                 //
-        ("input-file,f", po::value<std::string>(), "set the source file [file name]")                                 //
-        ("include-path,I", po::value<std::vector<std::string>>(), "set the include path [include path]")              //
-        ("define-parameters,d", po::value<std::vector<std::string>>()->multitoken(), "parameter values [N=10 M=100]") //
-        ("scop-function,s", po::value<std::string>(), "set the scop function scop")                                   //
-        ("compute-bounds,b", po::value<bool>()->default_value(false), "compute stack distance bounds");
+      ("line-size,l", po::value<long>()->default_value(CACHE_LINE_SIZE), "cache-line size in byte")                 //
+      ("associativity,k", po::value<long>()->default_value(CACHE_ASSOC), "number of lines per set")                 //
+      ("input-file,f", po::value<std::string>(), "set the source file [file name]")                                 //
+      ("include-path,I", po::value<std::vector<std::string>>(), "set the include path [include path]")              //
+      ("define-parameters,d", po::value<std::vector<std::string>>()->multitoken(), "parameter values [N=10 M=100]") //
+      ("scop-function,s", po::value<std::string>(), "set the scop function scop")                                   //
+      ("compute-bounds,b", po::value<bool>()->default_value(false), "compute stack distance bounds");
 
     // parse the program options
     po::variables_map Variables;

@@ -15,6 +15,7 @@ void Program::extractScop(std::string SourceFile, std::string ScopFunction) {
     printf("-> exit(-1) cannot extract scope\n");
     exit(-1);
   }
+  Printer_ = isl_printer_to_file(Context_.get(), stdout);
 
   // get the schedule and access information
   // (the tagged accesses allow us to distinguish multiple accesses of the same array)
@@ -237,6 +238,7 @@ isl::union_map Program::extendAccesses(isl::union_map Accesses, bool WriteRefere
   return AccessesExt;
 }
 
+//XXX:Equivalent to linearize
 void Program::computeAccessToLine(isl::set Parameters) {
   if (AccessToLine_.is_null()) {
     // compute the access map
@@ -252,6 +254,8 @@ void Program::computeAccessToLine(isl::set Parameters) {
       }
       // map the access to the array offsets
       isl::map AccessToArray = isl::map::identity(Extent.get_space().map_from_set());
+
+
       AccessToElement_ = AccessToElement_.unite(isl::union_map(AccessToArray));
       // compute elements per cache line
       long ElementsPerCacheLine = MachineModel_.CacheLineSize / ElementSizes_[Name];
@@ -267,6 +271,58 @@ void Program::computeAccessToLine(isl::set Parameters) {
     AccessToElement_ = AccessToElement_.coalesce();
   }
 }
+
+
+void Program::computeAccessToLineAndSet(isl::set Parameters) {
+  if (AccessToLine_.is_null() || AccessToSet_.is_null()) {
+    // compute the access map
+    AccessToLine_ = isl::map::empty(Writes_.get_space());
+    AccessToSet_ = isl::map::empty(Writes_.get_space());
+    AccessToElement_ = isl::map::empty(Writes_.get_space());
+    long NumSet = MachineModel_.CacheSizes[0] / (MachineModel_.CacheLineSize * MachineModel_.Assoc);
+    for (auto Array : ArrayExtents_) {
+      // extract the array information
+      std::string Name = Array.first;
+      isl::set Extent = Array.second;
+      // apply the parameters
+      if (!Parameters.is_null()) {
+        Extent = Extent.intersect_params(Parameters);
+      }
+      // map the access to the array offsets
+      isl::map AccessToArray = isl::map::identity(Extent.get_space().map_from_set());
+      isl::map AccessToArray2 = isl::map::identity(Extent.get_space().map_from_set());
+
+      AccessToElement_ = AccessToElement_.unite(isl::union_map(AccessToArray));
+      // compute elements per cache line
+      long ElementsPerCacheLine = MachineModel_.CacheLineSize / ElementSizes_[Name];
+      AccessToArray = introduceCacheLines(Name, AccessToArray, ElementsPerCacheLine);
+      AccessToArray2 = introduceCacheSets(Name, AccessToArray, NumSet);
+      AccessToLine_ = AccessToLine_.unite(isl::union_map(AccessToArray));
+      AccessToLine_ = AccessToLine_.coalesce();
+      AccessToSet_ = AccessToSet_.unite(isl::union_map(AccessToArray2));
+      AccessToSet_ = AccessToSet_.coalesce();
+    }
+    // compose the memory accesses with access map
+    isl::union_map Accesses = Reads_.unite(Writes_);
+    AccessToLine_ = Accesses.apply_range(AccessToLine_);
+    AccessToLine_ = AccessToLine_.coalesce();
+    AccessToElement_ = Accesses.apply_range(AccessToElement_);
+    AccessToElement_ = AccessToElement_.coalesce();
+    AccessToSet_ = Accesses.apply_range(AccessToSet_);
+    AccessToSet_ = AccessToSet_.coalesce();
+
+    // isl_printer *p = Printer_;
+    // printf("AccesstoLine_:\n");
+    // p = isl_printer_print_union_map(p, AccessToLine_.get());
+    // printf("\n");
+    // printf("AccesstoSet_, where numset = %ld:\n", NumSet);
+    // p = isl_printer_print_union_map(p, AccessToSet_.get());
+    // printf("\n");
+    // isl_printer_free(p);
+
+  }
+}
+
 
 isl::map Program::introduceCacheLines(std::string Name, isl::map AccessToArray, long ElementsPerCacheLine) const {
   // introduce additional dimension that divides the innermost dimension by the cache line size
@@ -284,8 +340,8 @@ isl::map Program::introduceCacheLines(std::string Name, isl::map AccessToArray, 
   return AccessToArray;
 }
 
+
 isl::map Program::introduceCacheSets(std::string Name, isl::map AccessToArray, long NumberOfCacheSets) const {
-  // introduce additional dimension that divides the innermost dimension by the cache line size
   int Dim = AccessToArray.dim(isl::dim::out) - 1;
   AccessToArray = AccessToArray.add_dims(isl::dim::out, 1);
   isl::local_space LS = isl::local_space(AccessToArray.range().get_space());
@@ -294,6 +350,7 @@ isl::map Program::introduceCacheSets(std::string Name, isl::map AccessToArray, l
   isl::pw_aff Modulo = Var.mod(isl::val(Var.get_ctx(), NumberOfCacheSets));
   isl::set Constraint = VarPrime.eq_set(Modulo);
   AccessToArray = AccessToArray.intersect_range(Constraint);
+  // AccessToArray = AccessToArray.project_out(isl::dim::out, 0, Dim + 1);
   AccessToArray = AccessToArray.set_tuple_name(isl::dim::out, Name);
   // return the resulting array
   return AccessToArray;

@@ -15,8 +15,9 @@
 // computation options
 #define RASTERIZATION 1
 #define EQUALIZATION 1
-#define DIMENSION_COUNTING 1
+// #define DIMENSION_COUNTING 1
 #define COMPUTE_CONFLICTS 1
+#define ASSOCIATIVE_CACHE 1
 
 //#define TIMERS 1
 //#define ENUMERATE_POINTS 1
@@ -30,6 +31,7 @@
 struct machine_model {
   long CacheLineSize;
   std::vector<long> CacheSizes;
+  long Assoc;
 };
 
 // struct defining the model options

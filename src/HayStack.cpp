@@ -9,6 +9,7 @@
 #include "HayStack.h"
 #include "Timer.h"
 #include "isl-helpers.h"
+#include "op.h"
 
 #include "barvinok/isl.h"
 
@@ -22,6 +23,11 @@ isl_ctx *allocateContextWithIncludePaths(std::vector<std::string> IncludePaths) 
     Arguments.push_back(ArgumentI);
     Arguments.push_back(const_cast<char *>(IncludePath.c_str()));
   }
+  // HACK defaulted to large dataset for polybench
+  char ArgumentD[] = "-D";
+  char ArgumentD_val[] = "LARGE_DATASET";
+  Arguments.push_back(ArgumentD);
+  Arguments.push_back(ArgumentD_val);
   int ArgumentCount = Arguments.size();
   struct pet_options *options;
   options = pet_options_new_with_defaults();
@@ -39,6 +45,9 @@ void HayStack::initModel(std::vector<NamedLong> Parameters) {
   // extract the parameters
   Parameters_ = Program_.getSchedule().params();
   int NumberOfParameters = Parameters_.dim(isl::dim::param);
+
+  //This is where they make sure all loops are bounded at compile time
+  //FIXME: This is very naive since int n = 4 wouldn't be recognized as a loop bound
   if (Parameters.size() < NumberOfParameters) {
     printf("-> exit(-1) not enough parameters\n");
     exit(-1);
@@ -57,10 +66,21 @@ void HayStack::initModel(std::vector<NamedLong> Parameters) {
   for (auto &Entry : SortedParameters) {
     ParameterValues_.push_back(Entry.second);
   }
+
   // compute the access map
-  Program_.computeAccessToLine(Parameters_);
+  Program_.computeAccessToLineAndSet(Parameters_);
+
   // compute the between map for all statements
   computeGlobalMaps();
+
+  // isl_printer *p = Program_.getPrinter();
+  // printf("Schedule:\n");
+  // p = isl_printer_print_union_map(p, Schedule_.get());
+  // printf("\n");
+  // printf("Reads & Writes:\n");
+  // p = isl_printer_print_union_map(p, Program_.getReads().get());
+  // printf("\n");
+  // p = isl_printer_print_union_map(p, Program_.getWrites().get());
   // extract the access information
   extractAccesses();
 }
@@ -108,26 +128,49 @@ std::vector<NamedMisses> HayStack::countCacheMisses() {
     addConflicts(Next);
     BetweenMap = BetweenMap.apply_range(Program_.getAccessToLine());
     BetweenMap = BetweenMap.detect_equalities(); // important
+
     Timer::stopTimer("ComputeBetweenMap");
     // compute the cache misses
     for (auto &Current : Accesses_) {
-      Current.computeStackDistances(BetweenMap);
+      Current.computeStackDistances(BetweenMap, Program_.getPrinter());
     }
   }
 #else
-  Timer::startTimer("ComputeBetweenMap");
+  #ifdef ASSOCIATIVE_CACHE
+  auto num_sets = MachineModel_.CacheSizes[0] / (MachineModel_.Assoc * MachineModel_.CacheLineSize);
+  printf("num_sets = %ld\n", num_sets);
+  for (int i = 0; i < num_sets; i++) {
+    computeMapsPerSet(i);
+    auto Next = SameLineSucc_.reverse().lexmax();
+    Next =
+        Schedule_.apply_range(Next).apply_range(Schedule_.reverse()).coalesce();
+    auto After = Next.apply_range(Forward_);
+    auto BetweenMap = After.intersect(Before_);
+    addConflicts(Next);
+    // BetweenMap = BetweenMap.apply_range(Program_.getAccessToLine());
+    BetweenMap = BetweenMap.apply_range(AccessToLine_);
+    BetweenMap = BetweenMap.detect_equalities(); // important
+    Timer::stopTimer("ComputeBetweenMap");
+    // compute the cache misses
+    for (auto &Current : Accesses_) {
+      Current.computeStackDistances(BetweenMap, Program_.getPrinter());
+    }
+  }
+#else
   auto Next = SameLineSucc_.reverse().lexmax();
   Next = Schedule_.apply_range(Next).apply_range(Schedule_.reverse()).coalesce();
   auto After = Next.apply_range(Forward_);
   auto BetweenMap = After.intersect(Before_);
   addConflicts(Next);
-  BetweenMap = BetweenMap.apply_range(Program_.getAccessToLine());
+  // BetweenMap = BetweenMap.apply_range(Program_.getAccessToLine());
+  BetweenMap = BetweenMap.apply_range(AccessToLine_);
   BetweenMap = BetweenMap.detect_equalities(); // important
   Timer::stopTimer("ComputeBetweenMap");
   // compute the cache misses
   for (auto &Current : Accesses_) {
-    Current.computeStackDistances(BetweenMap);
+    Current.computeStackDistances(BetweenMap, Program_.getPrinter());
   }
+  #endif
 #endif
   // count the capacity misses and collect the results
   for (auto &Current : Accesses_) {
@@ -148,10 +191,44 @@ std::vector<NamedVector> HayStack::countCacheMisses(std::vector<long> CacheSizes
   return Results;
 }
 
+void HayStack::computeMapsPerSet(int set_index) {
+
+  isl::union_map AccessToSet = Program_.getAccessToSet();
+  // Keep only iterations that access S0
+  isl::union_map AccessToSet2 = isl::map::empty(AccessToSet.get_space());
+
+  auto extractSet = [&](isl::map Map) {
+    std::string Array = Map.get_tuple_name(isl::dim::out);
+    isl::local_space LS = isl::local_space(Map.range().get_space());
+    isl::pw_aff Var = isl::pw_aff::var_on_domain(LS, isl::dim::set,
+                                                 Map.dim(isl::dim::out) - 1);
+    isl::pw_aff Var2 = Var * 0 + set_index;
+    isl::set EqualConstraint = Var.eq_set(Var2);
+    Map = Map.intersect_range(EqualConstraint);
+    AccessToSet2 = AccessToSet2.unite(isl::union_map(Map));
+    return isl::stat::ok();
+  };
+  AccessToSet.foreach_map(extractSet);
+
+  // map the iterations to the cache lines and cache sets
+  isl::union_map IterToSet = AccessToSet2.apply_domain(Schedule_);
+  IterToSet = IterToSet.coalesce();
+  AccessToLine_ = Program_.getAccessToLine().intersect_domain(AccessToSet2.domain());
+
+  isl::union_map IterToLine = AccessToLine_.apply_domain(Schedule_);
+  IterToLine = IterToLine.coalesce();
+
+  // compute accesses of the same cache line
+  isl::union_map SameLine = IterToLine.apply_range(IterToLine.reverse());
+  SameLineSucc_ = SameLine.intersect(LexSucc_);
+  SameLineSucc_ = SameLineSucc_.coalesce();
+}
+
 void HayStack::computeGlobalMaps() {
   Timer::startTimer("ComputeBetweenMap");
-  // get the schedule and limit parameters
+
   Schedule_ = Program_.getSchedule();
+
   if (Parameters_.is_null()) {
     // if parameters are unknown introduce lower bound
     isl::set Parameters = Schedule_.params();
@@ -168,18 +245,20 @@ void HayStack::computeGlobalMaps() {
   Schedule_ = Schedule_.intersect_domain(Program_.getAccessDomain());
   Schedule_ = Schedule_.coalesce();
 
-  // map the iterations to the cache lines and cache sets
-  isl::union_map IterToLine = Program_.getAccessToLine().apply_domain(Schedule_);
+  AccessToLine_ = Program_.getAccessToLine();
+  isl::union_map IterToLine = AccessToLine_.apply_domain(Schedule_);
   IterToLine = IterToLine.coalesce();
 
   // get the successor maps
   isl::space Space = isl::set(IterToLine.domain()).get_space();
-  isl::map LexSucc = isl::map::lex_lt(Space);
+  LexSucc_ = isl::map::lex_lt(Space);
   LexSuccEq_ = isl::map::lex_le(Space);
+  LexPrec_ = isl::map::lex_gt(Space);
+  LexPrecEq_ = isl::map::lex_ge(Space);
 
   // compute accesses of the same cache line
   isl::union_map SameLine = IterToLine.apply_range(IterToLine.reverse());
-  SameLineSucc_ = SameLine.intersect(LexSucc);
+  SameLineSucc_ = SameLine.intersect(LexSucc_);
   SameLineSucc_ = SameLineSucc_.coalesce();
 
   // compute the before and forward maps
@@ -199,6 +278,7 @@ void HayStack::extractAccesses() {
     std::string Statement = Set.get_tuple_name();
     // iterate the read and write indexes
     auto AccessInfos = Program_.getAccessInfos()[Statement];
+    //Add for each set
     for (int i = 0; i < AccessInfos.size(); ++i) {
       // compute the domain
       isl::set Domain = Schedule_.domain().extract_set(Set.get_space());

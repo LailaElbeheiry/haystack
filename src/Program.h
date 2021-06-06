@@ -7,6 +7,7 @@
 
 #include "pet.h"
 #include <isl/isl-noexceptions.h>
+#include <isl/printer.h>
 #include <map>
 #include <string>
 
@@ -21,12 +22,17 @@ public:
   void extractScop(std::string SourceFile, std::string ScopFunction);
 
   void computeAccessToLine(isl::set Parameters);
+  void computeAccessToLineAndSet(isl::set Parameters);
+  void computeAccessToSet(isl::set Parameters);
 
+  isl_printer *getPrinter() { return Printer_; }
+  isl::ctx getContext() const { return Context_; }
   isl::union_map getSchedule() const { return ScheduleMap_; }
   isl::union_map getReads() const { return Reads_; }
   isl::union_map getWrites() const { return Writes_; }
   isl::union_set getAccessDomain() const { return AccessDomain_; }
   isl::union_map getAccessToLine() const { return AccessToLine_; }
+  isl::union_map getAccessToSet() const { return AccessToSet_; }
   isl::union_map getAccessToElement() const { return AccessToElement_; }
   std::map<std::string, long> getElementSizes() const { return ElementSizes_; }
 
@@ -41,6 +47,7 @@ private:
   isl::map introduceCacheSets(std::string Name, isl::map AccessToArray, long NumberOfCacheSets) const;
 
   isl::ctx Context_;
+  isl_printer *Printer_;
   machine_model MachineModel_;
 
   isl::schedule Schedule_;
@@ -48,6 +55,7 @@ private:
   isl::union_map Reads_;
   isl::union_map Writes_;
   isl::union_map AccessToLine_;
+  isl::union_map AccessToSet_;
   isl::union_map AccessToElement_;
   isl::union_set AccessDomain_;
 

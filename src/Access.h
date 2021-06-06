@@ -28,7 +28,7 @@ public:
 
   // compute base cache miss information
   void countCompulsoryMisses(isl::union_map First);
-  void computeStackDistances(isl::union_map BetweenMap);
+  void computeStackDistances(isl::union_map BetweenMap, isl_printer *Printer);
   void countCapacityMisses();
   misses getResult() const { return Result_; };
 

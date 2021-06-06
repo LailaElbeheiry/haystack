@@ -1,0 +1,4 @@
+sudo ln -s -f /usr/lib/llvm-10/bin/ld.lld /usr/bin/ld 
+export CPPFLAGS="-I/home/laila/Desktop/projects/thesis/llvm-project/clang/include -I/home/laila/Desktop/projects/thesis/llvm-project/build/tools/clang/include"
+export LDFLAGS="-L/home/laila/Desktop/projects/thesis/llvm-project/build/lib"
+export LD_LIBRARY_PATH="/home/laila/Desktop/projects/thesis/llvm-project/build/lib"
